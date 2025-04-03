@@ -1,4 +1,7 @@
 streamlit
-PyMuPDF
+pdfplumber
+pandas
+openpyxl
 openai
 python-dotenv
+tabulate
