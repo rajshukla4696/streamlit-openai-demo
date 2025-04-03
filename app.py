@@ -1,8 +1,10 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import pdfplumber
+import pandas as pd
 import openai
 import os
 from dotenv import load_dotenv
+from tabulate import tabulate
 
 # Load environment variables
 load_dotenv()
@@ -13,45 +15,61 @@ openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
 openai.api_version = "2024-02-01"
 openai.api_key = os.getenv("AZURE_OPENAI_API_KEY")
 
-# Function to extract text from PDF
-def extract_text_from_pdf(pdf_file):
-    text = ""
-    doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
-    for page in doc:
-        text += page.get_text("text") + "\n"
-    return text
+# Function to extract tables from PDF
+def extract_tables_from_pdf(pdf_file):
+    tables = []
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            extracted_tables = page.extract_tables()
+            for table in extracted_tables:
+                df = pd.DataFrame(table)
+                df.columns = df.iloc[0]  # Set first row as header
+                df = df[1:].reset_index(drop=True)  # Remove header row
+                tables.append(df)
+    return tables
 
-# Function to query Azure OpenAI
-def query_openai(prompt, document_text):
+# Function to query Azure OpenAI using table data
+def query_openai_table(prompt, table_data):
+    structured_table = tabulate(table_data, headers='keys', tablefmt='plain')  # Convert DataFrame to readable text
+    full_prompt = f"Here is a table:\n{structured_table}\n\nUser Question: {prompt}"
+
     response = openai.ChatCompletion.create(
         engine=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
         messages=[
-            {"role": "system", "content": "You are a helpful assistant that answers questions based on the provided document."},
-            {"role": "user", "content": f"Document:\n{document_text}\n\nUser Question: {prompt}"}
+            {"role": "system", "content": "You are an AI that answers questions based on tables."},
+            {"role": "user", "content": full_prompt}
         ],
         max_tokens=500
     )
     return response["choices"][0]["message"]["content"]
 
 # Streamlit UI
-st.title("📄 PDF Query App with Azure OpenAI")
-st.write("Upload a PDF and ask questions about its content.")
+st.title("📊 PDF Table Query App with Azure OpenAI")
+st.write("Upload a PDF containing tables and ask questions about them.")
 
 uploaded_file = st.file_uploader("Upload your PDF", type=["pdf"])
 
 if uploaded_file:
-    with st.spinner("Extracting text..."):
-        pdf_text = extract_text_from_pdf(uploaded_file)
-    st.success("Text extracted successfully!")
-    st.text_area("Extracted Text (Preview)", pdf_text[:1000], height=200)
+    with st.spinner("Extracting tables..."):
+        pdf_tables = extract_tables_from_pdf(uploaded_file)
 
-    user_question = st.text_input("Ask a question about the document:")
+    if not pdf_tables:
+        st.error("No tables found in the PDF!")
+    else:
+        st.success(f"Extracted {len(pdf_tables)} tables.")
+        selected_table_index = st.selectbox("Select a table to query:", list(range(len(pdf_tables))))
+        table_df = pdf_tables[selected_table_index]
+        
+        st.write("### Extracted Table")
+        st.dataframe(table_df)
 
-    if st.button("Get Answer"):
-        if user_question:
-            with st.spinner("Querying Azure OpenAI..."):
-                answer = query_openai(user_question, pdf_text[:5000])  # Limit for context size
-            st.success("Response:")
-            st.write(answer)
-        else:
-            st.warning("Please enter a question!")
+        user_question = st.text_input("Ask a question about the table:")
+
+        if st.button("Get Answer"):
+            if user_question:
+                with st.spinner("Querying Azure OpenAI..."):
+                    answer = query_openai_table(user_question, table_df)
+                st.success("Response:")
+                st.write(answer)
+            else:
+                st.warning("Please enter a question!")
